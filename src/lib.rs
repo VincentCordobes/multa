@@ -7,78 +7,34 @@ use crossterm::{
 };
 use rand::distributions::{Distribution, Standard, Uniform};
 use rand::Rng;
+use std::cmp;
 use std::fmt;
 use std::io::stdout;
 use std::{collections::BinaryHeap, num::ParseIntError};
 
-const PERIODS: &[u32] = &[1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144];
-
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
 struct Factors(u8, u8);
 
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, Debug, PartialEq, Eq, Clone)]
 struct Card {
-    factors: Factors,
-    period_i: usize,
-    period: u32,
-    last_tick: u32,
-}
-
-impl fmt::Debug for Card {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
-        write!(
-            f,
-            "Card ({:?}, next_tick {:?} last_tick {:?}, period: {:?})",
-            self.factors,
-            self.next_tick(),
-            self.last_tick,
-            self.period,
-        )
-    }
+    value: Factors,
+    interval: u32,
+    due: u32,
 }
 
 impl Card {
     fn new(x: u8, y: u8) -> Card {
         Card {
-            factors: Factors(x, y),
-            period_i: 0,
-            last_tick: 0,
-            period: 1,
-        }
-    }
-
-    fn next_tick(&self) -> u32 {
-        let period = PERIODS[self.period_i];
-        self.last_tick + period
-    }
-
-    fn graduates(&self, tick: u32) -> Card {
-        let max_i = PERIODS.len() - 1;
-        let period_i = std::cmp::min(self.period_i + 1, max_i);
-        let period = PERIODS[period_i];
-        Card {
-            period_i,
-            period,
-            last_tick: tick,
-            ..*self
-        }
-    }
-
-    fn reset(&self, tick: u32) -> Card {
-        let period_i = 0;
-        let period = PERIODS[period_i];
-        Card {
-            period_i: 0,
-            period,
-            last_tick: tick,
-            ..*self
+            value: Factors(x, y),
+            due: 0,
+            interval: 1,
         }
     }
 }
 
 impl Ord for Card {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other.next_tick().cmp(&self.next_tick())
+        other.due.cmp(&self.due)
     }
 }
 
@@ -145,7 +101,7 @@ impl Action {
                 Event::Key(KeyEvent {
                     modifiers: KeyModifiers::CONTROL,
                     code: KeyCode::Char('c'),
-                }) => break Ok(Action::Exit),
+                }) => return Ok(Action::Exit),
 
                 Event::Key(KeyEvent {
                     code: KeyCode::Enter,
@@ -155,7 +111,7 @@ impl Action {
                     code: KeyCode::Char(' '),
                     ..
                 }) => {
-                    break Ok(Action::Input(line));
+                    return Ok(Action::Input(line));
                 }
 
                 Event::Key(KeyEvent {
@@ -206,56 +162,76 @@ fn generate_all_cards() -> Vec<Card> {
 }
 
 #[derive(Debug)]
-struct Cards {
+struct Intervals;
+
+impl Intervals {
+    const INTERVALS: &'static [u32] = &[1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144];
+
+    fn first() -> u32 {
+        Self::INTERVALS[0]
+    }
+
+    fn next(interval: u32) -> u32 {
+        let max_i = Self::INTERVALS.len() - 1;
+        let curr_i = Self::INTERVALS.iter().position(|&x| x == interval);
+
+        match curr_i {
+            Some(i) => Self::INTERVALS[cmp::min(i + 1, max_i)],
+            None => Self::INTERVALS[0],
+        }
+    }
+}
+
+enum Review {
+    Good,
+    Bad,
+}
+
+#[derive(Debug)]
+struct Session {
     unseen: Vec<Card>,
     heap: BinaryHeap<Card>,
     tick: u32,
 }
 
-enum Rating {
-    Good,
-    Bad,
+impl Session {
+    fn review(&mut self, card: Card, review: Review) {
+        let interval = match review {
+            Review::Good => Intervals::next(card.interval),
+            Review::Bad => Intervals::first(),
+        };
+
+        self.heap.push(Card {
+            due: self.tick + interval,
+            interval,
+            ..card
+        });
+    }
 }
 
-impl Cards {
-    fn new(cards: Vec<Card>) -> Cards {
-        let heap: BinaryHeap<Card> = BinaryHeap::new();
-        Cards {
+impl From<Vec<Card>> for Session {
+    fn from(cards: Vec<Card>) -> Self {
+        Self {
             unseen: cards,
-            heap,
+            heap: BinaryHeap::new(),
             tick: 0,
         }
     }
-
-    fn review(&mut self, mut f: impl FnMut(&Card) -> Result<Rating>) {
-        while let Some(card) = self.next() {
-            match f(&card) {
-                Ok(Rating::Good) => {
-                    self.heap.push(card.graduates(self.tick));
-                }
-                Ok(Rating::Bad) => {
-                    self.heap.push(card.reset(self.tick));
-                }
-                Err(_) => break,
-            }
-        }
-    }
 }
 
-impl Iterator for Cards {
+impl Iterator for Session {
     type Item = Card;
 
     fn next(&mut self) -> Option<Self::Item> {
         let card = match self.heap.peek() {
-            Some(card) if card.next_tick() <= self.tick => self.heap.pop()?,
+            Some(card) if card.due <= self.tick => self.heap.pop(),
             _ => match self.unseen.pop() {
-                Some(card) => card,
-                None => self.heap.pop()?,
+                Some(card) => Some(card),
+                None => self.heap.pop(),
             },
         };
-
         self.tick += 1;
-        Some(card)
+        card
     }
 }
 
@@ -266,14 +242,16 @@ pub fn run() -> Result<()> {
 
     let mut ok_count = 0;
     let mut ko_count = 0;
+    let all_cards = generate_all_cards();
 
-    let mut cards = Cards::new(generate_all_cards());
+    let mut session = Session::from(all_cards);
 
-    cards.review(|card| {
+    while let Some(card) = session.next() {
         log::debug!("{:?}", card);
-        execute!(stdout, style::Print(format!("{} = ", &card.factors)))?;
+        log::debug!("{:?}", session);
+        execute!(stdout, style::Print(format!("{} = ", card.value)))?;
 
-        let expected = card.factors.compute();
+        let expected = card.value.compute();
 
         let input = Action::read();
 
@@ -284,25 +262,25 @@ pub fn run() -> Result<()> {
             style::ResetColor,
         )?;
 
-        match input {
+        let review = match input {
             Ok(Action::Input(answer)) => match answer.parse::<u8>() {
                 Ok(value) if value == expected => {
                     ok_count += 1;
                     execute!(
                         stdout,
-                        style::Print(format!("{} = {}", &card.factors, &answer)),
+                        style::Print(format!("{} = {}", card.value, &answer)),
                         style::SetForegroundColor(Color::Green),
                         style::Print(" OK"),
                         style::ResetColor,
                         cursor::MoveToNextLine(1)
                     )?;
-                    Ok(Rating::Good)
+                    Review::Good
                 }
                 _ => {
                     ko_count += 1;
                     execute!(
                         stdout,
-                        style::Print(format!("{} != {}", &card.factors, &answer)),
+                        style::Print(format!("{} != {}", card.value, &answer)),
                         style::SetForegroundColor(Color::Red),
                         style::Print(" KO!!!"),
                         style::ResetColor,
@@ -310,14 +288,14 @@ pub fn run() -> Result<()> {
                         style::ResetColor,
                         cursor::MoveToNextLine(1)
                     )?;
-
-                    Ok(Rating::Bad)
+                    Review::Bad
                 }
             },
-            Ok(Action::Exit) => Err(ErrorKind::Exit),
-            _ => Err(ErrorKind::Exit),
-        }
-    });
+            Ok(Action::Exit) | _ => break,
+        };
+
+        session.review(card, review);
+    }
 
     execute!(stdout, terminal::LeaveAlternateScreen)?;
 
@@ -336,4 +314,67 @@ pub fn run() -> Result<()> {
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cards_review() {
+        let mut session = Session::from(vec![
+            Card::new(9, 6),
+            Card::new(9, 7),
+            Card::new(9, 8),
+            Card::new(9, 9),
+        ]);
+
+        assert_eq!(session.tick, 0);
+        let card = session.next().unwrap();
+        assert_eq!(card.value, Factors(9, 9));
+        session.review(card, Review::Bad);
+        // 9x9 due: 2,  interval: 1
+
+        assert_eq!(session.tick, 1);
+        let card = session.next().unwrap();
+        assert_eq!(card.value, Factors(9, 8));
+        session.review(card, Review::Good);
+        // 9x8 due: 4,  interval: 2
+
+        assert_eq!(session.tick, 2);
+        let card = session.next().unwrap();
+        assert_eq!(card.value, Factors(9, 9));
+        session.review(card, Review::Good);
+        // 9x9 due: 5,  interval: 2
+
+        assert_eq!(session.tick, 3);
+        let card = session.next().unwrap();
+        assert_eq!(card.value, Factors(9, 7));
+        session.review(card, Review::Good);
+        // 9x7 due: 6,  interval: 2
+
+        assert_eq!(session.tick, 4);
+        let card = session.next().unwrap();
+        assert_eq!(card.value, Factors(9, 8));
+        session.review(card, Review::Good);
+        // 9x8 due: 8,  interval: 3
+
+        assert_eq!(session.tick, 5);
+        let card = session.next().unwrap();
+        assert_eq!(card.value, Factors(9, 9));
+        session.review(card, Review::Good);
+        // 9x9 due: 9,  interval: 3
+
+        assert_eq!(session.tick, 6);
+        let card = session.next().unwrap();
+        assert_eq!(card.value, Factors(9, 7));
+        session.review(card, Review::Good);
+        // 9x7 due: 10,  interval: 3
+
+        assert_eq!(session.tick, 7);
+        let card = session.next().unwrap();
+        println!("{:?} {:?}", &card, &session);
+        assert_eq!(card.value, Factors(9, 6));
+        session.review(card, Review::Good);
+        // 9x6 due: 9,  interval: 2
+    }
 }
