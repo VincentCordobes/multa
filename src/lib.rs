@@ -5,17 +5,26 @@ use crossterm::{
     style::{self, Color},
     terminal::{self, ClearType},
 };
-use rand::distributions::{Distribution, Standard, Uniform};
 use rand::Rng;
-use std::cmp;
-use std::fmt;
+use rand::{
+    distributions::{Distribution, Standard, Uniform},
+    prelude::SliceRandom,
+    thread_rng,
+};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io;
 use std::io::stdout;
+use std::io::BufReader;
+use std::path::Path;
+use std::{cmp, path::PathBuf};
 use std::{collections::BinaryHeap, num::ParseIntError};
+use std::{fmt, fs::File};
 
-#[derive(Hash, PartialEq, Eq, Clone, Copy)]
+#[derive(Hash, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 struct Factors(u8, u8);
 
-#[derive(Hash, Debug, PartialEq, Eq, Clone)]
+#[derive(Hash, Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 struct Card {
     value: Factors,
     interval: u32,
@@ -76,6 +85,8 @@ type Result<T> = std::result::Result<T, ErrorKind>;
 #[derive(Debug)]
 pub enum ErrorKind {
     Crossterm(crossterm::ErrorKind),
+    Serde(serde_json::Error),
+    Io(io::Error),
     InvalidAnswer(ParseIntError),
     Exit,
 }
@@ -83,6 +94,18 @@ pub enum ErrorKind {
 impl From<crossterm::ErrorKind> for ErrorKind {
     fn from(err: crossterm::ErrorKind) -> ErrorKind {
         ErrorKind::Crossterm(err)
+    }
+}
+
+impl From<serde_json::Error> for ErrorKind {
+    fn from(err: serde_json::Error) -> ErrorKind {
+        ErrorKind::Serde(err)
+    }
+}
+
+impl From<io::Error> for ErrorKind {
+    fn from(err: io::Error) -> ErrorKind {
+        ErrorKind::Io(err)
     }
 }
 
@@ -150,15 +173,16 @@ fn plural(x: usize) -> &'static str {
     }
 }
 
-fn generate_all_cards() -> Vec<Card> {
-    let mut set = Vec::new();
+fn gen_cards() -> Vec<Card> {
+    let mut cards = Vec::new();
     for x in 2..10 {
         for y in 2..10 {
             let card = Card::new(x, y);
-            set.push(card);
+            cards.push(card);
         }
     }
-    set
+    cards.shuffle(&mut thread_rng());
+    cards
 }
 
 #[derive(Debug)]
@@ -185,9 +209,15 @@ impl Intervals {
 enum Review {
     Good,
     Bad,
+    Again,
 }
 
-#[derive(Debug)]
+fn file_path() -> PathBuf {
+    let home = dirs::home_dir().expect("Cannot find HOME");
+    Path::new(&home).join(".multa")
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct Session {
     unseen: Vec<Card>,
     heap: BinaryHeap<Card>,
@@ -199,6 +229,7 @@ impl Session {
         let interval = match review {
             Review::Good => Intervals::next(card.interval),
             Review::Bad => Intervals::first(),
+            Review::Again => card.interval,
         };
 
         self.heap.push(Card {
@@ -206,6 +237,18 @@ impl Session {
             interval,
             ..card
         });
+    }
+
+    fn load() -> Result<Session> {
+        let file = File::open(file_path())?;
+        let reader = BufReader::new(file);
+        let session = serde_json::from_reader(reader).unwrap();
+        Ok(session)
+    }
+
+    fn save(&self) -> Result<()> {
+        fs::write(file_path(), serde_json::to_string(&self)?)?;
+        Ok(())
     }
 }
 
@@ -242,9 +285,11 @@ pub fn run() -> Result<()> {
 
     let mut ok_count = 0;
     let mut ko_count = 0;
-    let all_cards = generate_all_cards();
 
-    let mut session = Session::from(all_cards);
+    let mut session = match Session::load() {
+        Ok(session) => session,
+        _ => Session::from(gen_cards()),
+    };
 
     while let Some(card) = session.next() {
         log::debug!("{:?}", card);
@@ -262,7 +307,7 @@ pub fn run() -> Result<()> {
             style::ResetColor,
         )?;
 
-        let review = match input {
+        match input {
             Ok(Action::Input(answer)) => match answer.parse::<u8>() {
                 Ok(value) if value == expected => {
                     ok_count += 1;
@@ -274,7 +319,7 @@ pub fn run() -> Result<()> {
                         style::ResetColor,
                         cursor::MoveToNextLine(1)
                     )?;
-                    Review::Good
+                    session.review(card, Review::Good)
                 }
                 _ => {
                     ko_count += 1;
@@ -288,13 +333,14 @@ pub fn run() -> Result<()> {
                         style::ResetColor,
                         cursor::MoveToNextLine(1)
                     )?;
-                    Review::Bad
+                    session.review(card, Review::Bad)
                 }
             },
-            Ok(Action::Exit) | _ => break,
+            Ok(Action::Exit) | _ => {
+                session.review(card, Review::Again);
+                break;
+            }
         };
-
-        session.review(card, review);
     }
 
     execute!(stdout, terminal::LeaveAlternateScreen)?;
@@ -313,7 +359,7 @@ pub fn run() -> Result<()> {
         cursor::MoveToNextLine(1),
     )?;
 
-    Ok(())
+    session.save()
 }
 
 #[cfg(test)]
