@@ -159,7 +159,7 @@ pub fn run() -> Result<()> {
         _ => Session::from(gen_cards()),
     };
 
-    while let Some(card) = session.next() {
+    while let Some(card) = session.peek() {
         log::debug!("{:?}", card);
         log::debug!("{:?}", session);
         execute!(stdout, style::Print(format!("{} = ", card.value)))?;
@@ -180,18 +180,15 @@ pub fn run() -> Result<()> {
                 Ok(value) if value == expected => {
                     print_ok(&stdout, &card, &answer)?;
                     summary.ok += 1;
-                    session.review(card, Review::Good)
+                    session.review(Review::Good)
                 }
                 _ => {
                     print_ko(&stdout, &card, &answer, expected)?;
                     summary.ko += 1;
-                    session.review(card, Review::Bad)
+                    session.review(Review::Bad)
                 }
             },
-            Ok(Action::Exit) | _ => {
-                session.review(card, Review::Again);
-                break;
-            }
+            Ok(Action::Exit) | _ => break,
         };
     }
 
@@ -208,59 +205,59 @@ mod tests {
     #[test]
     fn cards_review() {
         let mut session = Session::from(vec![
-            Card::new(9, 6),
-            Card::new(9, 7),
-            Card::new(9, 8),
             Card::new(9, 9),
+            Card::new(9, 8),
+            Card::new(9, 7),
+            Card::new(9, 6),
         ]);
 
         assert_eq!(session.tick, 0);
-        let card = session.next().unwrap();
+        let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 9));
-        session.review(card, Review::Bad);
+        session.review(Review::Bad);
         // 9x9 due: 2,  interval: 1
 
         assert_eq!(session.tick, 1);
-        let card = session.next().unwrap();
+        let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 8));
-        session.review(card, Review::Good);
+        session.review(Review::Good);
         // 9x8 due: 4,  interval: 2
 
         assert_eq!(session.tick, 2);
-        let card = session.next().unwrap();
+        let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 9));
-        session.review(card, Review::Good);
+        session.review(Review::Good);
         // 9x9 due: 5,  interval: 2
 
         assert_eq!(session.tick, 3);
-        let card = session.next().unwrap();
+        let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 7));
-        session.review(card, Review::Good);
+        session.review(Review::Good);
         // 9x7 due: 6,  interval: 2
 
         assert_eq!(session.tick, 4);
-        let card = session.next().unwrap();
+        let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 8));
-        session.review(card, Review::Good);
+        session.review(Review::Good);
         // 9x8 due: 8,  interval: 3
 
         assert_eq!(session.tick, 5);
-        let card = session.next().unwrap();
+        let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 9));
-        session.review(card, Review::Good);
+        session.review(Review::Good);
         // 9x9 due: 9,  interval: 3
 
         assert_eq!(session.tick, 6);
-        let card = session.next().unwrap();
+        let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 7));
-        session.review(card, Review::Good);
+        session.review(Review::Good);
         // 9x7 due: 10,  interval: 3
 
         assert_eq!(session.tick, 7);
-        let card = session.next().unwrap();
+        let card = session.peek().unwrap();
         println!("{:?} {:?}", &card, &session);
         assert_eq!(card.value, Factors(9, 6));
-        session.review(card, Review::Good);
+        session.review(Review::Good);
         // 9x6 due: 9,  interval: 2
     }
 }

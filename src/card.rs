@@ -17,15 +17,15 @@ impl Factors {
 pub struct Card {
     pub value: Factors,
     pub interval: u32,
-    pub due: u32,
+    pub due: Option<u32>,
 }
 
 impl Card {
     pub fn new(x: u8, y: u8) -> Card {
         Card {
             value: Factors(x, y),
-            due: 0,
             interval: 1,
+            due: None,
         }
     }
 }
