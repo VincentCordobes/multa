@@ -1,4 +1,5 @@
 mod card;
+mod config;
 mod error;
 mod session;
 
@@ -9,14 +10,15 @@ use crossterm::{
     style::{self, Color},
     terminal::{self, ClearType},
 };
-use rand::prelude::SliceRandom;
-use rand::thread_rng;
 use session::{Review, Session};
 use std::fmt;
 use std::io::stdout;
 use std::io::Stdout;
+use std::path::Path;
+use std::path::PathBuf;
 
 use card::Card;
+use config::Config;
 use error::Result;
 
 enum Action {
@@ -73,18 +75,6 @@ impl Action {
             }
         }
     }
-}
-
-fn gen_cards() -> Vec<Card> {
-    let mut cards = Vec::new();
-    for x in 2..10 {
-        for y in 2..10 {
-            let card = Card::new(x, y);
-            cards.push(card);
-        }
-    }
-    cards.shuffle(&mut thread_rng());
-    cards
 }
 
 struct Summary {
@@ -148,16 +138,22 @@ fn print_ko(mut stdout: &Stdout, card: &Card, answer: &String, expected: u8) -> 
     Ok(())
 }
 
+fn file_path() -> PathBuf {
+    let home = dirs::home_dir().expect("Cannot find HOME");
+    Path::new(&home).join(".multa")
+}
+
 pub fn run() -> Result<()> {
     terminal::enable_raw_mode()?;
     let mut stdout = stdout();
     execute!(stdout, terminal::EnterAlternateScreen)?;
 
-    let mut summary = Summary::new();
-    let mut session = match Session::load() {
-        Ok(session) => session,
-        _ => Session::from(gen_cards()),
+    let config = Config {
+        data_path: file_path(),
     };
+
+    let mut summary = Summary::new();
+    let mut session = Session::init(&config);
 
     while let Some(card) = session.peek() {
         log::debug!("{:?}", card);
@@ -195,7 +191,7 @@ pub fn run() -> Result<()> {
     execute!(stdout, terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
     execute!(stdout, style::Print(summary), cursor::MoveToNextLine(1),)?;
-    session.save()
+    session.save(&config)
 }
 
 #[cfg(test)]
@@ -255,7 +251,6 @@ mod tests {
 
         assert_eq!(session.tick, 7);
         let card = session.peek().unwrap();
-        println!("{:?} {:?}", &card, &session);
         assert_eq!(card.value, Factors(9, 6));
         session.review(Review::Good);
         // 9x6 due: 9,  interval: 2
