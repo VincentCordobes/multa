@@ -1,4 +1,4 @@
-use clap::{AppSettings, Clap};
+use clap::Clap;
 use std::process;
 
 #[derive(Clap)]

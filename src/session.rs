@@ -6,15 +6,15 @@ use std::{collections::HashMap, fs};
 
 use crate::card::Card;
 use crate::card::Factors;
-use crate::config::Config;
 use crate::error::Result;
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
+use std::path::Path;
+use std::path::PathBuf;
 
 pub enum Review {
     Good,
     Bad,
-    Again,
 }
 
 #[derive(Debug)]
@@ -73,18 +73,6 @@ impl Session {
         Session { cards, tick: 0 }
     }
 
-    pub fn init(config: &Config) -> Session {
-        let mut session = Session::new();
-
-        if let Ok(file) = File::open(config.data_path.clone()) {
-            let reader = BufReader::new(file);
-            let StoredSession { cards } = serde_json::from_reader(reader).unwrap();
-            session.apply_changes(cards);
-        };
-
-        session
-    }
-
     pub fn get_cards_to_save(&self) -> Vec<Card> {
         let cards: Vec<Card> = self
             .cards
@@ -100,10 +88,29 @@ impl Session {
         cards
     }
 
-    pub fn save(self, config: &Config) -> Result<()> {
+    fn profile_path(profile: &String) -> PathBuf {
+        let home = dirs::data_dir().expect("Cannot find data_dir");
+        Path::new(&home).join("multa").join(profile)
+    }
+
+    pub fn load(profile: &String) -> Session {
+        let mut session = Session::new();
+
+        if let Ok(file) = File::open(Session::profile_path(profile)) {
+            let reader = BufReader::new(file);
+            let StoredSession { cards } = serde_json::from_reader(reader).unwrap();
+            session.apply_changes(cards);
+        };
+
+        session
+    }
+
+    pub fn save(self, profile: &String) -> Result<()> {
         let cards = self.get_cards_to_save();
         let session = StoredSession { cards };
-        fs::write(config.data_path.clone(), serde_json::to_string(&session)?)?;
+        let path = Session::profile_path(profile);
+        fs::create_dir_all(path.parent().unwrap())?;
+        fs::write(path, serde_json::to_string(&session)?)?;
         Ok(())
     }
 
@@ -141,7 +148,6 @@ impl Session {
             let interval = match review {
                 Review::Good => Intervals::next(card.interval),
                 Review::Bad => Intervals::first(),
-                Review::Again => card.interval,
             };
 
             let value = card.value;

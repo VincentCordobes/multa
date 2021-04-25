@@ -1,5 +1,4 @@
 mod card;
-mod config;
 mod error;
 mod session;
 
@@ -14,11 +13,8 @@ use session::{Review, Session};
 use std::fmt;
 use std::io::stdout;
 use std::io::Stdout;
-use std::path::Path;
-use std::path::PathBuf;
 
 use card::Card;
-use config::Config;
 use error::Result;
 
 enum Action {
@@ -138,11 +134,6 @@ fn print_ko(mut stdout: &Stdout, card: &Card, answer: &String, expected: u8) -> 
     Ok(())
 }
 
-fn file_path() -> PathBuf {
-    let home = dirs::home_dir().expect("Cannot find HOME");
-    Path::new(&home).join(".multa")
-}
-
 pub struct Opts {
     pub profile: String,
 }
@@ -152,12 +143,8 @@ pub fn run(opts: Opts) -> Result<()> {
     let mut stdout = stdout();
     execute!(stdout, terminal::EnterAlternateScreen)?;
 
-    let config = Config {
-        data_path: file_path(),
-    };
-
     let mut summary = Summary::new();
-    let mut session = Session::init(&config);
+    let mut session = Session::load(&opts.profile);
 
     while let Some(card) = session.peek() {
         log::debug!("{:?}", card);
@@ -195,5 +182,5 @@ pub fn run(opts: Opts) -> Result<()> {
     execute!(stdout, terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
     execute!(stdout, style::Print(summary), cursor::MoveToNextLine(1),)?;
-    session.save(&config)
+    session.save(&opts.profile)
 }
