@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::cmp;
 use std::fs::File;
 use std::io::BufReader;
-use std::{cmp, collections::HashSet};
+use std::{collections::HashMap, fs};
 
 use crate::card::Card;
 use crate::card::Factors;
@@ -52,38 +52,72 @@ impl TimeTables {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct Session {
     pub cards: Vec<Card>,
     pub tick: u32,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredSession {
+    cards: Vec<Card>,
+}
+
 impl Session {
     pub fn new() -> Session {
-        Session {
-            cards: Vec::new(),
-            tick: 0,
-        }
+        let cards = TimeTables::gen()
+            .iter()
+            .map(|&Factors(x, y)| Card::new(x, y))
+            .collect();
+
+        Session { cards, tick: 0 }
     }
 
     pub fn init(config: &Config) -> Session {
-        let all_cards = TimeTables::gen();
-        let mut session = match Session::load(&config) {
-            Ok(session) => session,
-            _ => Session::new(),
+        let mut session = Session::new();
+
+        if let Ok(file) = File::open(config.data_path.clone()) {
+            let reader = BufReader::new(file);
+            let StoredSession { cards } = serde_json::from_reader(reader).unwrap();
+            session.apply_changes(cards);
         };
-        session.merge_with(all_cards);
+
         session
     }
 
-    pub fn merge_with(&mut self, other: Vec<Factors>) {
-        let self_cards: HashSet<Factors> = self.cards.iter().map(|card| card.value).collect();
-        let other_items = other.into_iter().collect::<HashSet<Factors>>();
-        let new_cards = other_items
-            .difference(&self_cards)
-            .map(|&Factors(x, y)| Card::new(x, y));
+    pub fn get_cards_to_save(&self) -> Vec<Card> {
+        let cards: Vec<Card> = self
+            .cards
+            .iter()
+            .cloned()
+            .filter(|card| card.due.is_some())
+            .map(|card| Card {
+                due: card.due.map(|due| due - self.tick),
+                ..card
+            })
+            .collect();
 
-        self.cards.extend(new_cards);
+        cards
+    }
+
+    pub fn save(self, config: &Config) -> Result<()> {
+        let cards = self.get_cards_to_save();
+        let session = StoredSession { cards };
+        fs::write(config.data_path.clone(), serde_json::to_string(&session)?)?;
+        Ok(())
+    }
+
+    pub fn apply_changes(&mut self, changes: Vec<Card>) {
+        let mut card_by_value: HashMap<Factors, Card> =
+            changes.into_iter().map(|card| (card.value, card)).collect();
+
+        for card in self.cards.iter_mut() {
+            let changed_card = card_by_value.remove(&card.value);
+            if let Some(changed_card) = changed_card {
+                *card = changed_card
+            }
+        }
+
         self.rebuild();
     }
 
@@ -127,27 +161,6 @@ impl Session {
     fn rebuild(&mut self) {
         self.cards.sort_by_key(|k| k.due.unwrap_or(u32::MAX));
     }
-
-    pub fn load(config: &Config) -> Result<Session> {
-        let file = File::open(config.data_path.clone())?;
-        let reader = BufReader::new(file);
-        let mut session: Session = serde_json::from_reader(reader).unwrap();
-        session.rebuild();
-        Ok(session)
-    }
-
-    pub fn save(self, config: &Config) -> Result<()> {
-        let cards: Vec<Card> = self
-            .cards
-            .iter()
-            .cloned()
-            .filter(|card| card.due.is_some())
-            .collect();
-
-        let session = Session { cards, ..self };
-        fs::write(config.data_path.clone(), serde_json::to_string(&session)?)?;
-        Ok(())
-    }
 }
 
 impl From<Vec<Card>> for Session {
@@ -171,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn init_from_cards() {
+    fn from_cards() {
         let session = Session::from(vec![
             a_card_with_due(3, None),
             a_card_with_due(2, Some(2)),
@@ -191,22 +204,98 @@ mod tests {
     }
 
     #[test]
-    fn extend_session() {
+    fn apply_changes() {
         let mut session = Session::from(vec![
-            a_card_with_due(1, Some(1)),
+            a_card_with_due(1, None),
             a_card_with_due(2, None),
             a_card_with_due(3, None),
+            a_card_with_due(4, None),
         ]);
-        session.merge_with(vec![Factors(1, 1), Factors(4, 4), Factors(3, 3)]);
+        session.apply_changes(vec![
+            a_card_with_due(1, Some(2)),
+            a_card_with_due(2, Some(1)),
+            a_card_with_due(3, None),
+        ]);
 
         assert_eq!(
             session.cards,
             vec![
-                a_card_with_due(1, Some(1)),
-                a_card_with_due(2, None),
+                a_card_with_due(2, Some(1)),
+                a_card_with_due(1, Some(2)),
                 a_card_with_due(3, None),
                 a_card_with_due(4, None),
             ]
         )
+    }
+
+    #[test]
+    fn get_cards_to_save() {
+        let session = Session {
+            tick: 2,
+            cards: vec![a_card_with_due(1, Some(3)), a_card_with_due(2, Some(4))],
+        };
+
+        assert_eq!(
+            session.get_cards_to_save(),
+            [a_card_with_due(1, Some(1)), a_card_with_due(2, Some(2))]
+        )
+    }
+
+    #[test]
+    fn session_review() {
+        let mut session = Session::from(vec![
+            Card::new(9, 9),
+            Card::new(9, 8),
+            Card::new(9, 7),
+            Card::new(9, 6),
+        ]);
+
+        assert_eq!(session.tick, 0);
+        let card = session.peek().unwrap();
+        assert_eq!(card.value, Factors(9, 9));
+        session.review(Review::Bad);
+        // 9x9 due: 2,  interval: 1
+
+        assert_eq!(session.tick, 1);
+        let card = session.peek().unwrap();
+        assert_eq!(card.value, Factors(9, 8));
+        session.review(Review::Good);
+        // 9x8 due: 4,  interval: 2
+
+        assert_eq!(session.tick, 2);
+        let card = session.peek().unwrap();
+        assert_eq!(card.value, Factors(9, 9));
+        session.review(Review::Good);
+        // 9x9 due: 5,  interval: 2
+
+        assert_eq!(session.tick, 3);
+        let card = session.peek().unwrap();
+        assert_eq!(card.value, Factors(9, 7));
+        session.review(Review::Good);
+        // 9x7 due: 6,  interval: 2
+
+        assert_eq!(session.tick, 4);
+        let card = session.peek().unwrap();
+        assert_eq!(card.value, Factors(9, 8));
+        session.review(Review::Good);
+        // 9x8 due: 8,  interval: 3
+
+        assert_eq!(session.tick, 5);
+        let card = session.peek().unwrap();
+        assert_eq!(card.value, Factors(9, 9));
+        session.review(Review::Good);
+        // 9x9 due: 9,  interval: 3
+
+        assert_eq!(session.tick, 6);
+        let card = session.peek().unwrap();
+        assert_eq!(card.value, Factors(9, 7));
+        session.review(Review::Good);
+        // 9x7 due: 10,  interval: 3
+
+        assert_eq!(session.tick, 7);
+        let card = session.peek().unwrap();
+        assert_eq!(card.value, Factors(9, 6));
+        session.review(Review::Good);
+        // 9x6 due: 9,  interval: 2
     }
 }

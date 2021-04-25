@@ -143,7 +143,11 @@ fn file_path() -> PathBuf {
     Path::new(&home).join(".multa")
 }
 
-pub fn run() -> Result<()> {
+pub struct Opts {
+    pub profile: String,
+}
+
+pub fn run(opts: Opts) -> Result<()> {
     terminal::enable_raw_mode()?;
     let mut stdout = stdout();
     execute!(stdout, terminal::EnterAlternateScreen)?;
@@ -192,67 +196,4 @@ pub fn run() -> Result<()> {
     terminal::disable_raw_mode()?;
     execute!(stdout, style::Print(summary), cursor::MoveToNextLine(1),)?;
     session.save(&config)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::card::Factors;
-    use super::*;
-    #[test]
-    fn cards_review() {
-        let mut session = Session::from(vec![
-            Card::new(9, 9),
-            Card::new(9, 8),
-            Card::new(9, 7),
-            Card::new(9, 6),
-        ]);
-
-        assert_eq!(session.tick, 0);
-        let card = session.peek().unwrap();
-        assert_eq!(card.value, Factors(9, 9));
-        session.review(Review::Bad);
-        // 9x9 due: 2,  interval: 1
-
-        assert_eq!(session.tick, 1);
-        let card = session.peek().unwrap();
-        assert_eq!(card.value, Factors(9, 8));
-        session.review(Review::Good);
-        // 9x8 due: 4,  interval: 2
-
-        assert_eq!(session.tick, 2);
-        let card = session.peek().unwrap();
-        assert_eq!(card.value, Factors(9, 9));
-        session.review(Review::Good);
-        // 9x9 due: 5,  interval: 2
-
-        assert_eq!(session.tick, 3);
-        let card = session.peek().unwrap();
-        assert_eq!(card.value, Factors(9, 7));
-        session.review(Review::Good);
-        // 9x7 due: 6,  interval: 2
-
-        assert_eq!(session.tick, 4);
-        let card = session.peek().unwrap();
-        assert_eq!(card.value, Factors(9, 8));
-        session.review(Review::Good);
-        // 9x8 due: 8,  interval: 3
-
-        assert_eq!(session.tick, 5);
-        let card = session.peek().unwrap();
-        assert_eq!(card.value, Factors(9, 9));
-        session.review(Review::Good);
-        // 9x9 due: 9,  interval: 3
-
-        assert_eq!(session.tick, 6);
-        let card = session.peek().unwrap();
-        assert_eq!(card.value, Factors(9, 7));
-        session.review(Review::Good);
-        // 9x7 due: 10,  interval: 3
-
-        assert_eq!(session.tick, 7);
-        let card = session.peek().unwrap();
-        assert_eq!(card.value, Factors(9, 6));
-        session.review(Review::Good);
-        // 9x6 due: 9,  interval: 2
-    }
 }
