@@ -5,12 +5,15 @@ use std::process;
 struct Opts {
     #[clap(short, long, default_value = "default")]
     profile: String,
+    #[clap(short, long)]
+    examination: bool,
 }
 
 impl From<Opts> for multa::Opts {
     fn from(opts: Opts) -> Self {
         Self {
             profile: opts.profile,
+            examination: opts.examination,
         }
     }
 }

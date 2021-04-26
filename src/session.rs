@@ -12,7 +12,7 @@ use rand::thread_rng;
 use std::path::Path;
 use std::path::PathBuf;
 
-pub enum Review {
+pub enum Rating {
     Good,
     Bad,
 }
@@ -21,7 +21,7 @@ pub enum Review {
 struct Intervals;
 
 impl Intervals {
-    const INTERVALS: &'static [u32] = &[1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144];
+    const INTERVALS: &'static [u32] = &[1, 2, 3, 5, 8, 13, 21, 34, 55, 65];
 
     fn first() -> u32 {
         Self::INTERVALS[0]
@@ -74,13 +74,20 @@ impl Session {
     }
 
     pub fn get_cards_to_save(&self) -> Vec<Card> {
+        let distance_to_zero = cmp::min(
+            self.cards
+                .first()
+                .and_then(|card| card.due)
+                .unwrap_or(self.tick),
+            self.tick,
+        );
         let cards: Vec<Card> = self
             .cards
             .iter()
             .cloned()
             .filter(|card| card.due.is_some())
             .map(|card| Card {
-                due: card.due.map(|due| due - self.tick),
+                due: card.due.map(|due| due - distance_to_zero),
                 ..card
             })
             .collect();
@@ -143,11 +150,11 @@ impl Session {
         }
     }
 
-    pub fn review(&mut self, review: Review) {
+    pub fn review(&mut self, rating: Rating) {
         if let Some(card) = self.peek() {
-            let interval = match review {
-                Review::Good => Intervals::next(card.interval),
-                Review::Bad => Intervals::first(),
+            let interval = match rating {
+                Rating::Good => Intervals::next(card.interval),
+                Rating::Bad => Intervals::first(),
             };
 
             let value = card.value;
@@ -244,7 +251,14 @@ mod tests {
         assert_eq!(
             session.get_cards_to_save(),
             [a_card_with_due(1, Some(1)), a_card_with_due(2, Some(2))]
-        )
+        );
+
+        let session = Session {
+            tick: 6,
+            cards: vec![a_card_with_due(1, Some(5))],
+        };
+
+        assert_eq!(session.get_cards_to_save(), [a_card_with_due(1, Some(0))])
     }
 
     #[test]
@@ -259,49 +273,49 @@ mod tests {
         assert_eq!(session.tick, 0);
         let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 9));
-        session.review(Review::Bad);
+        session.review(Rating::Bad);
         // 9x9 due: 2,  interval: 1
 
         assert_eq!(session.tick, 1);
         let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 8));
-        session.review(Review::Good);
+        session.review(Rating::Good);
         // 9x8 due: 4,  interval: 2
 
         assert_eq!(session.tick, 2);
         let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 9));
-        session.review(Review::Good);
+        session.review(Rating::Good);
         // 9x9 due: 5,  interval: 2
 
         assert_eq!(session.tick, 3);
         let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 7));
-        session.review(Review::Good);
+        session.review(Rating::Good);
         // 9x7 due: 6,  interval: 2
 
         assert_eq!(session.tick, 4);
         let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 8));
-        session.review(Review::Good);
+        session.review(Rating::Good);
         // 9x8 due: 8,  interval: 3
 
         assert_eq!(session.tick, 5);
         let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 9));
-        session.review(Review::Good);
+        session.review(Rating::Good);
         // 9x9 due: 9,  interval: 3
 
         assert_eq!(session.tick, 6);
         let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 7));
-        session.review(Review::Good);
+        session.review(Rating::Good);
         // 9x7 due: 10,  interval: 3
 
         assert_eq!(session.tick, 7);
         let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 6));
-        session.review(Review::Good);
+        session.review(Rating::Good);
         // 9x6 due: 9,  interval: 2
     }
 }

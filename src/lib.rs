@@ -9,7 +9,7 @@ use crossterm::{
     style::{self, Color},
     terminal::{self, ClearType},
 };
-use session::{Review, Session};
+use session::{Rating, Session};
 use std::fmt;
 use std::io::stdout;
 use std::io::Stdout;
@@ -19,6 +19,7 @@ use error::Result;
 
 enum Action {
     Input(String),
+    Review(Rating),
     Exit,
 }
 
@@ -33,6 +34,16 @@ impl Action {
                     modifiers: KeyModifiers::CONTROL,
                     code: KeyCode::Char('c'),
                 }) => return Ok(Action::Exit),
+
+                Event::Key(KeyEvent {
+                    code: KeyCode::Right,
+                    ..
+                }) => return Ok(Action::Review(Rating::Good)),
+
+                Event::Key(KeyEvent {
+                    code: KeyCode::Left,
+                    ..
+                }) => return Ok(Action::Review(Rating::Bad)),
 
                 Event::Key(KeyEvent {
                     code: KeyCode::Enter,
@@ -136,6 +147,7 @@ fn print_ko(mut stdout: &Stdout, card: &Card, answer: &String, expected: u8) -> 
 
 pub struct Opts {
     pub profile: String,
+    pub examination: bool,
 }
 
 pub fn run(opts: Opts) -> Result<()> {
@@ -149,9 +161,21 @@ pub fn run(opts: Opts) -> Result<()> {
     while let Some(card) = session.peek() {
         log::debug!("{:?}", card);
         log::debug!("{:?}", session);
-        execute!(stdout, style::Print(format!("{} = ", card.value)))?;
 
         let expected = card.value.compute();
+
+        execute!(
+            stdout,
+            style::Print(format!(
+                "{} = {}",
+                card.value,
+                if opts.examination {
+                    expected.to_string()
+                } else {
+                    String::from("")
+                }
+            ))
+        )?;
 
         let input = Action::read();
 
@@ -167,14 +191,31 @@ pub fn run(opts: Opts) -> Result<()> {
                 Ok(value) if value == expected => {
                     print_ok(&stdout, &card, &answer)?;
                     summary.ok += 1;
-                    session.review(Review::Good)
+                    session.review(Rating::Good)
                 }
                 _ => {
                     print_ko(&stdout, &card, &answer, expected)?;
                     summary.ko += 1;
-                    session.review(Review::Bad)
+                    session.review(Rating::Bad)
                 }
             },
+            Ok(Action::Review(Rating::Good)) => {
+                print_ok(&stdout, &card, &expected.to_string())?;
+                summary.ok += 1;
+                session.review(Rating::Good)
+            }
+            Ok(Action::Review(Rating::Bad)) => {
+                execute!(
+                    stdout,
+                    style::Print(format!("{} = {}", card.value, &expected)),
+                    style::SetForegroundColor(Color::Red),
+                    style::Print(" KO!!!"),
+                    style::ResetColor,
+                    cursor::MoveToNextLine(1)
+                )?;
+                summary.ko += 1;
+                session.review(Rating::Bad)
+            }
             Ok(Action::Exit) | _ => break,
         };
     }
