@@ -14,31 +14,36 @@ impl Factors {
 }
 
 #[derive(Hash, Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+pub enum Status {
+    Unseen,
+    Learning(u32),
+    Learned(u32),
+}
+
+impl Status {
+    pub fn map<F: FnOnce(u32) -> u32>(self, f: F) -> Status {
+        match self {
+            Status::Unseen => Status::Unseen,
+            Status::Learning(due) => Status::Learning(f(due)),
+            Status::Learned(due) => Status::Learned(f(due)),
+        }
+    }
+}
+
+#[derive(Hash, Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct Card {
     pub value: Factors,
     pub interval: u32,
-    pub due: Option<u32>,
+    pub status: Status,
 }
 
 impl Card {
     pub fn new(x: u8, y: u8) -> Card {
         Card {
             value: Factors(x, y),
-            interval: 1,
-            due: None,
+            interval: 55,
+            status: Status::Unseen,
         }
-    }
-}
-
-impl Ord for Card {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        other.due.cmp(&self.due)
-    }
-}
-
-impl PartialOrd for Card {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
     }
 }
 

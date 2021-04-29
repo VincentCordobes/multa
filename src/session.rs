@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
-use std::cmp;
+use std::cmp::{self, Ordering};
 use std::fs::File;
 use std::io::BufReader;
 use std::{collections::HashMap, fs};
 
 use crate::card::Card;
 use crate::card::Factors;
+use crate::card::Status;
 use crate::error::Result;
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
@@ -21,10 +22,14 @@ pub enum Rating {
 struct Intervals;
 
 impl Intervals {
-    const INTERVALS: &'static [u32] = &[1, 2, 3, 5, 8, 13, 21, 34, 55, 65];
+    const INTERVALS: &'static [u32] = &[2, 3, 5, 8, 13, 21, 34, 55];
 
     fn first() -> u32 {
         Self::INTERVALS[0]
+    }
+
+    fn last() -> u32 {
+        Self::INTERVALS[Self::INTERVALS.len() - 1]
     }
 
     fn next(interval: u32) -> u32 {
@@ -74,20 +79,25 @@ impl Session {
     }
 
     pub fn get_cards_to_save(&self) -> Vec<Card> {
-        let distance_to_zero = cmp::min(
+        let min_due = cmp::min(
             self.cards
-                .first()
-                .and_then(|card| card.due)
-                .unwrap_or(self.tick),
+                .iter()
+                .map(|card| match card.status {
+                    Status::Learning(due) | Status::Learned(due) => due,
+                    _ => self.tick,
+                })
+                .min()
+                .unwrap(),
             self.tick,
         );
+
         let cards: Vec<Card> = self
             .cards
             .iter()
             .cloned()
-            .filter(|card| card.due.is_some())
+            .filter(|card| card.status != Status::Unseen)
             .map(|card| Card {
-                due: card.due.map(|due| due - distance_to_zero),
+                status: card.status.map(|due| due - min_due),
                 ..card
             })
             .collect();
@@ -136,18 +146,16 @@ impl Session {
     }
 
     pub fn peek(&self) -> Option<&Card> {
-        let due_card = self
-            .cards
+        self.cards
             .iter()
-            .find(|card| card.due.map_or(false, |due| due <= self.tick));
-
-        match due_card {
-            Some(card) => Some(card),
-            None => match self.cards.iter().find(|card| card.due.is_none()) {
-                Some(card) => Some(card),
-                None => self.cards.first(),
-            },
-        }
+            .find(|card| matches!(card.status, Status::Learning(due) if due <= self.tick))
+            .or_else(|| self.cards.iter().find(|card| card.status == Status::Unseen))
+            .or_else(|| {
+                self.cards
+                    .iter()
+                    .find(|card| matches!(card.status, Status::Learned(_)))
+            })
+            .or_else(|| self.cards.first())
     }
 
     pub fn review(&mut self, rating: Rating) {
@@ -164,15 +172,29 @@ impl Session {
                 .find(|card| card.value == value)
                 .unwrap();
 
-            self.tick += 1;
+            let due = self.tick + interval;
             card.interval = interval;
-            card.due = Some(self.tick + interval);
+            card.status = if interval == Intervals::last() {
+                Status::Learned(due)
+            } else {
+                Status::Learning(due)
+            };
+
+            self.tick += 1;
             self.rebuild();
         }
     }
 
     fn rebuild(&mut self) {
-        self.cards.sort_by_key(|k| k.due.unwrap_or(u32::MAX));
+        self.cards.sort_by(|a, b| match (&a.status, &b.status) {
+            (Status::Learning(x), Status::Learning(y)) => x.cmp(&y),
+            (Status::Learned(x), Status::Learned(y)) => x.cmp(&y),
+            (Status::Unseen, Status::Unseen) => Ordering::Equal,
+            (Status::Unseen, Status::Learning(_)) => Ordering::Greater,
+            (Status::Unseen, Status::Learned(_)) => Ordering::Less,
+            (Status::Learning(_), _) => Ordering::Less,
+            (Status::Learned(_), _) => Ordering::Greater,
+        });
     }
 }
 
@@ -188,9 +210,9 @@ impl From<Vec<Card>> for Session {
 mod tests {
     use super::*;
 
-    fn a_card_with_due(id: u8, due: Option<u32>) -> Card {
+    fn a_card(id: u8, status: Status) -> Card {
         Card {
-            due,
+            status,
             interval: 1,
             value: Factors(id, id),
         }
@@ -199,19 +221,19 @@ mod tests {
     #[test]
     fn from_cards() {
         let session = Session::from(vec![
-            a_card_with_due(3, None),
-            a_card_with_due(2, Some(2)),
-            a_card_with_due(1, Some(1)),
-            a_card_with_due(4, None),
+            a_card(3, Status::Unseen),
+            a_card(2, Status::Learning(2)),
+            a_card(1, Status::Learning(1)),
+            a_card(4, Status::Unseen),
         ]);
 
         assert_eq!(
             session.cards,
             vec![
-                a_card_with_due(1, Some(1)),
-                a_card_with_due(2, Some(2)),
-                a_card_with_due(3, None),
-                a_card_with_due(4, None),
+                a_card(1, Status::Learning(1)),
+                a_card(2, Status::Learning(2)),
+                a_card(3, Status::Unseen),
+                a_card(4, Status::Unseen),
             ]
         )
     }
@@ -219,24 +241,24 @@ mod tests {
     #[test]
     fn apply_changes() {
         let mut session = Session::from(vec![
-            a_card_with_due(1, None),
-            a_card_with_due(2, None),
-            a_card_with_due(3, None),
-            a_card_with_due(4, None),
+            a_card(1, Status::Unseen),
+            a_card(2, Status::Unseen),
+            a_card(3, Status::Unseen),
+            a_card(4, Status::Unseen),
         ]);
         session.apply_changes(vec![
-            a_card_with_due(1, Some(2)),
-            a_card_with_due(2, Some(1)),
-            a_card_with_due(3, None),
+            a_card(1, Status::Learning(2)),
+            a_card(2, Status::Learning(1)),
+            a_card(3, Status::Unseen),
         ]);
 
         assert_eq!(
             session.cards,
             vec![
-                a_card_with_due(2, Some(1)),
-                a_card_with_due(1, Some(2)),
-                a_card_with_due(3, None),
-                a_card_with_due(4, None),
+                a_card(2, Status::Learning(1)),
+                a_card(1, Status::Learning(2)),
+                a_card(3, Status::Unseen),
+                a_card(4, Status::Unseen),
             ]
         )
     }
@@ -245,20 +267,29 @@ mod tests {
     fn get_cards_to_save() {
         let session = Session {
             tick: 2,
-            cards: vec![a_card_with_due(1, Some(3)), a_card_with_due(2, Some(4))],
+            cards: vec![
+                a_card(1, Status::Learning(3)),
+                a_card(2, Status::Learning(4)),
+            ],
         };
 
         assert_eq!(
             session.get_cards_to_save(),
-            [a_card_with_due(1, Some(1)), a_card_with_due(2, Some(2))]
+            [
+                a_card(1, Status::Learning(1)),
+                a_card(2, Status::Learning(2))
+            ]
         );
 
         let session = Session {
             tick: 6,
-            cards: vec![a_card_with_due(1, Some(5))],
+            cards: vec![a_card(1, Status::Learning(5))],
         };
 
-        assert_eq!(session.get_cards_to_save(), [a_card_with_due(1, Some(0))])
+        assert_eq!(
+            session.get_cards_to_save(),
+            [a_card(1, Status::Learning(0))]
+        )
     }
 
     #[test]
@@ -274,48 +305,48 @@ mod tests {
         let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 9));
         session.review(Rating::Bad);
-        // 9x9 due: 2,  interval: 1
+        // 9x9 due: 2,  interval: 2
 
         assert_eq!(session.tick, 1);
         let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 8));
         session.review(Rating::Good);
-        // 9x8 due: 4,  interval: 2
+        // 9x8 due: 4,  interval: 3
 
         assert_eq!(session.tick, 2);
         let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 9));
         session.review(Rating::Good);
-        // 9x9 due: 5,  interval: 2
+        // 9x9 due: 5,  interval: 3
 
         assert_eq!(session.tick, 3);
         let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 7));
         session.review(Rating::Good);
-        // 9x7 due: 6,  interval: 2
+        // 9x7 due: 6,  interval: 3
 
         assert_eq!(session.tick, 4);
         let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 8));
         session.review(Rating::Good);
-        // 9x8 due: 8,  interval: 3
+        // 9x8 due: 9,  interval: 5
 
         assert_eq!(session.tick, 5);
         let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 9));
         session.review(Rating::Good);
-        // 9x9 due: 9,  interval: 3
+        // 9x9 due: 10,  interval: 5
 
         assert_eq!(session.tick, 6);
         let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 7));
         session.review(Rating::Good);
-        // 9x7 due: 10,  interval: 3
+        // 9x7 due: 11,  interval: 5
 
         assert_eq!(session.tick, 7);
         let card = session.peek().unwrap();
         assert_eq!(card.value, Factors(9, 6));
         session.review(Rating::Good);
-        // 9x6 due: 9,  interval: 2
+        // 9x6 due: 10,  interval: 3
     }
 }
