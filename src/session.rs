@@ -213,7 +213,7 @@ mod tests {
     fn a_card(id: u8, status: Status) -> Card {
         Card {
             status,
-            interval: 1,
+            interval: 2,
             value: Factors(id, id),
         }
     }
@@ -295,10 +295,10 @@ mod tests {
     #[test]
     fn session_review() {
         let mut session = Session::from(vec![
-            Card::new(9, 9),
-            Card::new(9, 8),
-            Card::new(9, 7),
-            Card::new(9, 6),
+            a_card(9, Status::Unseen),
+            a_card(8, Status::Unseen),
+            a_card(7, Status::Unseen),
+            a_card(6, Status::Unseen),
         ]);
 
         assert_eq!(session.tick, 0);
@@ -309,9 +309,9 @@ mod tests {
 
         assert_eq!(session.tick, 1);
         let card = session.peek().unwrap();
-        assert_eq!(card.value, Factors(9, 8));
+        assert_eq!(card.value, Factors(8, 8));
         session.review(Rating::Good);
-        // 9x8 due: 4,  interval: 3
+        // 8x8 due: 4,  interval: 3
 
         assert_eq!(session.tick, 2);
         let card = session.peek().unwrap();
@@ -321,15 +321,15 @@ mod tests {
 
         assert_eq!(session.tick, 3);
         let card = session.peek().unwrap();
-        assert_eq!(card.value, Factors(9, 7));
+        assert_eq!(card.value, Factors(7, 7));
         session.review(Rating::Good);
-        // 9x7 due: 6,  interval: 3
+        // 7x7 due: 6,  interval: 3
 
         assert_eq!(session.tick, 4);
         let card = session.peek().unwrap();
-        assert_eq!(card.value, Factors(9, 8));
+        assert_eq!(card.value, Factors(8, 8));
         session.review(Rating::Good);
-        // 9x8 due: 9,  interval: 5
+        // 8x8 due: 9,  interval: 5
 
         assert_eq!(session.tick, 5);
         let card = session.peek().unwrap();
@@ -339,14 +339,14 @@ mod tests {
 
         assert_eq!(session.tick, 6);
         let card = session.peek().unwrap();
-        assert_eq!(card.value, Factors(9, 7));
+        assert_eq!(card.value, Factors(7, 7));
         session.review(Rating::Good);
-        // 9x7 due: 11,  interval: 5
+        // 7x7 due: 11,  interval: 5
 
         assert_eq!(session.tick, 7);
         let card = session.peek().unwrap();
-        assert_eq!(card.value, Factors(9, 6));
+        assert_eq!(card.value, Factors(6, 6));
         session.review(Rating::Good);
-        // 9x6 due: 10,  interval: 3
+        // 6x6 due: 10,  interval: 3
     }
 }
