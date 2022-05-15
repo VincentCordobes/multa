@@ -1,30 +1,53 @@
-use clap::Clap;
+use clap::{Clap, Subcommand};
 use std::process;
 
 #[derive(Clap)]
-struct Opts {
+struct Cli {
     #[clap(short, long, default_value = "default")]
     profile: String,
-    #[clap(short, long)]
-    examination: bool,
+    #[clap(subcommand)]
+    command: Option<Commands>,
 }
 
-impl From<Opts> for multa::Opts {
-    fn from(opts: Opts) -> Self {
+#[derive(Subcommand)]
+enum Commands {
+    Report,
+    Exam,
+}
+
+impl From<Cli> for multa::Opts {
+    fn from(cli: Cli) -> Self {
         Self {
-            profile: opts.profile,
-            examination: opts.examination,
+            examination: matches!(cli.command, Some(Commands::Exam)),
+            profile: cli.profile,
+        }
+    }
+}
+
+impl From<Cli> for multa::ReportOpts {
+    fn from(cli: Cli) -> Self {
+        Self {
+            profile: cli.profile,
         }
     }
 }
 
 fn main() {
     env_logger::init();
-    let opts: Opts = Opts::parse();
+    let cli: Cli = Cli::parse();
 
-    if let Err(e) = multa::run(multa::Opts::from(opts)) {
-        println!("Application error: {:?}", e);
+    match &cli.command {
+        Some(Commands::Report) => {
+            let opts = multa::ReportOpts::from(cli);
+            multa::report(opts)
+        }
+        _ => {
+            let opts = multa::Opts::from(cli);
+            if let Err(e) = multa::run(opts) {
+                println!("Application error: {:?}", e);
 
-        process::exit(1);
+                process::exit(1);
+            }
+        }
     }
 }

@@ -9,12 +9,12 @@ use crossterm::{
     style::{self, Color},
     terminal::{self, ClearType},
 };
-use session::{Rating, Session};
+use session::Session;
 use std::fmt;
 use std::io::stdout;
 use std::io::Stdout;
 
-use card::Card;
+use card::{Card, Rating};
 use error::Result;
 
 enum Action {
@@ -224,4 +224,35 @@ pub fn run(opts: Opts) -> Result<()> {
     terminal::disable_raw_mode()?;
     execute!(stdout, style::Print(summary), cursor::MoveToNextLine(1),)?;
     session.save(&opts.profile)
+}
+
+pub struct ReportOpts {
+    pub profile: String,
+}
+
+pub fn report(opts: ReportOpts) {
+    let session = Session::load(&opts.profile);
+    let mut bad_rated_cards: Vec<&Card> = session
+        .cards
+        .iter()
+        // .filter(|card| matches!(card.last_result, Some(Rating::Bad)))
+        .collect();
+
+    if bad_rated_cards.len() == 0 {
+        println!("Nothing to show");
+    } else {
+        bad_rated_cards.sort_by_key(|card| card.last_seen);
+        bad_rated_cards.iter().for_each(|card| {
+            println!(
+                "{} {} = {}",
+                if matches!(card.last_result, Some(Rating::Bad)) {
+                    "ko"
+                } else {
+                    "ok"
+                },
+                card.value,
+                card.value.compute().to_string(),
+            )
+        });
+    }
 }

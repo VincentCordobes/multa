@@ -2,21 +2,17 @@ use serde::{Deserialize, Serialize};
 use std::cmp::{self, Ordering};
 use std::fs::File;
 use std::io::BufReader;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{collections::HashMap, fs};
 
-use crate::card::Card;
 use crate::card::Factors;
 use crate::card::Status;
+use crate::card::{Card, Rating};
 use crate::error::Result;
 use rand::prelude::SliceRandom;
 use rand::thread_rng;
 use std::path::Path;
 use std::path::PathBuf;
-
-pub enum Rating {
-    Good,
-    Bad,
-}
 
 #[derive(Debug)]
 struct Intervals;
@@ -97,7 +93,7 @@ impl Session {
             .cloned()
             .filter(|card| card.status != Status::Unseen)
             .map(|card| Card {
-                status: card.status.map(|due| due - min_due),
+                status: card.status.map_due(|due| due - min_due),
                 ..card
             })
             .collect();
@@ -174,6 +170,11 @@ impl Session {
 
             let due = self.tick + interval;
             card.interval = interval;
+            card.last_result = Some(rating);
+            card.last_seen = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|duration| duration.as_secs());
             card.status = if interval == Intervals::last() {
                 Status::Learned(due)
             } else {
@@ -215,6 +216,8 @@ mod tests {
             status,
             interval: 2,
             value: Factors(id, id),
+            last_result: None,
+            last_seen: None,
         }
     }
 

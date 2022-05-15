@@ -21,7 +21,7 @@ pub enum Status {
 }
 
 impl Status {
-    pub fn map<F: FnOnce(u32) -> u32>(self, f: F) -> Status {
+    pub fn map_due<F: FnOnce(u32) -> u32>(self, f: F) -> Status {
         match self {
             Status::Unseen => Status::Unseen,
             Status::Learning(due) => Status::Learning(f(due)),
@@ -31,10 +31,18 @@ impl Status {
 }
 
 #[derive(Hash, Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+pub enum Rating {
+    Good,
+    Bad,
+}
+
+#[derive(Hash, Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct Card {
     pub value: Factors,
     pub interval: u32,
     pub status: Status,
+    pub last_result: Option<Rating>,
+    pub last_seen: Option<u64>,
 }
 
 impl Card {
@@ -43,6 +51,9 @@ impl Card {
             value: Factors(x, y),
             interval: 55,
             status: Status::Unseen,
+            // TODO: move last_result and last_seen to status?
+            last_result: None,
+            last_seen: None,
         }
     }
 }
