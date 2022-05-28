@@ -1,15 +1,19 @@
-use clap::{Clap, Subcommand};
 use std::process;
 
-#[derive(Clap)]
+use clap::Parser;
+use clap::Subcommand;
+
+#[derive(Parser, Debug)]
+#[clap(name = "multa")]
+#[clap(about = "Practice your times table", long_about = None)]
 struct Cli {
-    #[clap(short, long, default_value = "default")]
-    profile: String,
     #[clap(subcommand)]
     command: Option<Commands>,
+    #[clap(global = true, short, long, default_value = "global")]
+    profile: String,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 enum Commands {
     Report,
     Exam,
