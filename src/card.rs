@@ -30,7 +30,7 @@ impl Status {
     }
 }
 
-#[derive(Hash, Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Hash, Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum Rating {
     Good,
     Bad,

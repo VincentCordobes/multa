@@ -54,7 +54,14 @@ impl TimeTables {
 }
 
 #[derive(Debug)]
+struct Snapshot {
+    cards: Vec<Card>,
+    tick: u32,
+}
+
+#[derive(Debug)]
 pub struct Session {
+    snapshot: Option<Snapshot>,
     pub cards: Vec<Card>,
     pub tick: u32,
 }
@@ -71,7 +78,11 @@ impl Session {
             .map(|&Factors(x, y)| Card::new(x, y))
             .collect();
 
-        Session { cards, tick: 0 }
+        Session {
+            snapshot: None,
+            cards,
+            tick: 0,
+        }
     }
 
     pub fn get_cards_to_save(&self) -> Vec<Card> {
@@ -142,19 +153,14 @@ impl Session {
     }
 
     pub fn peek(&self) -> Option<&Card> {
-        self.cards
-            .iter()
-            .find(|card| matches!(card.status, Status::Learning(due) if due <= self.tick))
-            .or_else(|| self.cards.iter().find(|card| card.status == Status::Unseen))
-            .or_else(|| {
-                self.cards
-                    .iter()
-                    .find(|card| matches!(card.status, Status::Learned(_)))
-            })
-            .or_else(|| self.cards.first())
+        self.cards.first()
     }
 
     pub fn review(&mut self, rating: Rating) {
+        self.snapshot = Some(Snapshot {
+            cards: self.cards.clone(),
+            tick: self.tick,
+        });
         if let Some(card) = self.peek() {
             let interval = match rating {
                 Rating::Good => Intervals::next(card.interval),
@@ -186,14 +192,27 @@ impl Session {
         }
     }
 
+    pub fn rollback(&mut self) {
+        if let Some(snapshot) = &self.snapshot {
+            self.cards = snapshot.cards.clone();
+            self.tick = snapshot.tick;
+            self.snapshot = None;
+        }
+    }
+
     fn rebuild(&mut self) {
+        let tick = &self.tick;
         self.cards.sort_by(|a, b| match (&a.status, &b.status) {
-            (Status::Learning(x), Status::Learning(y)) => x.cmp(&y),
-            (Status::Learned(x), Status::Learned(y)) => x.cmp(&y),
+            (Status::Learning(x), Status::Learning(y)) => x.cmp(y),
+            (Status::Learning(x), _) if x <= tick => Ordering::Less,
+            (Status::Learning(_), _) => Ordering::Greater,
+
             (Status::Unseen, Status::Unseen) => Ordering::Equal,
-            (Status::Unseen, Status::Learning(_)) => Ordering::Greater,
-            (Status::Unseen, Status::Learned(_)) => Ordering::Less,
-            (Status::Learning(_), _) => Ordering::Less,
+            (Status::Unseen, Status::Learning(y)) if y <= tick => Ordering::Greater,
+            (Status::Unseen, _) => Ordering::Less,
+
+            (Status::Learned(x), Status::Learned(y)) => x.cmp(y),
+            (Status::Learned(_), Status::Learning(y)) if y > tick => Ordering::Less,
             (Status::Learned(_), _) => Ordering::Greater,
         });
     }
@@ -201,7 +220,11 @@ impl Session {
 
 impl From<Vec<Card>> for Session {
     fn from(cards: Vec<Card>) -> Session {
-        let mut session = Session { cards, tick: 0 };
+        let mut session = Session {
+            snapshot: None,
+            cards,
+            tick: 0,
+        };
         session.rebuild();
         session
     }
@@ -225,18 +248,18 @@ mod tests {
     fn from_cards() {
         let session = Session::from(vec![
             a_card(3, Status::Unseen),
-            a_card(2, Status::Learning(2)),
-            a_card(1, Status::Learning(1)),
+            a_card(2, Status::Learning(1)),
+            a_card(1, Status::Learning(0)),
             a_card(4, Status::Unseen),
         ]);
 
         assert_eq!(
             session.cards,
             vec![
-                a_card(1, Status::Learning(1)),
-                a_card(2, Status::Learning(2)),
+                a_card(1, Status::Learning(0)),
                 a_card(3, Status::Unseen),
                 a_card(4, Status::Unseen),
+                a_card(2, Status::Learning(1)),
             ]
         )
     }
@@ -250,18 +273,18 @@ mod tests {
             a_card(4, Status::Unseen),
         ]);
         session.apply_changes(vec![
-            a_card(1, Status::Learning(2)),
-            a_card(2, Status::Learning(1)),
+            a_card(1, Status::Learning(1)),
+            a_card(2, Status::Learning(0)),
             a_card(3, Status::Unseen),
         ]);
 
         assert_eq!(
             session.cards,
             vec![
-                a_card(2, Status::Learning(1)),
-                a_card(1, Status::Learning(2)),
+                a_card(2, Status::Learning(0)),
                 a_card(3, Status::Unseen),
                 a_card(4, Status::Unseen),
+                a_card(1, Status::Learning(1)),
             ]
         )
     }
@@ -269,6 +292,7 @@ mod tests {
     #[test]
     fn get_cards_to_save() {
         let session = Session {
+            snapshot: None,
             tick: 2,
             cards: vec![
                 a_card(1, Status::Learning(3)),
@@ -285,6 +309,7 @@ mod tests {
         );
 
         let session = Session {
+            snapshot: None,
             tick: 6,
             cards: vec![a_card(1, Status::Learning(5))],
         };
@@ -351,5 +376,28 @@ mod tests {
         assert_eq!(card.value, Factors(6, 6));
         session.review(Rating::Good);
         // 6x6 due: 10,  interval: 3
+    }
+
+    #[test]
+    fn session_review_rollback() {
+        let mut session = Session::from(vec![
+            a_card(9, Status::Unseen),
+            a_card(8, Status::Unseen),
+            a_card(7, Status::Unseen),
+            a_card(6, Status::Unseen),
+        ]);
+
+        assert_eq!(session.tick, 0);
+        let card = session.peek().unwrap();
+        assert_eq!(card.value, Factors(9, 9));
+        session.review(Rating::Bad);
+        // 9x9 due: 3,  interval: 3
+
+        assert_eq!(session.tick, 1);
+        let card = session.peek().unwrap();
+        assert_eq!(card.value, Factors(8, 8));
+        session.rollback();
+        let card = session.peek().unwrap();
+        assert_eq!(card.value, Factors(9, 9));
     }
 }

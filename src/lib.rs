@@ -5,26 +5,28 @@ mod session;
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-    execute,
+    execute, queue,
     style::{self, Color},
     terminal::{self, ClearType},
 };
 use session::Session;
 use std::fmt;
-use std::io::stdout;
-use std::io::Stdout;
+use std::io::{stdout, Write};
 
 use card::{Card, Rating};
 use error::Result;
 
+#[derive(Clone, Debug)]
 enum Action {
     Input(String),
     Review(Rating),
+    ShowAnswer,
+    Undo,
     Exit,
 }
 
 impl Action {
-    fn read() -> Result<Action> {
+    fn read(state: &State) -> Result<Action> {
         let mut line = String::new();
 
         loop {
@@ -36,9 +38,13 @@ impl Action {
                 }) => return Ok(Action::Exit),
 
                 Event::Key(KeyEvent {
+                    code: KeyCode::Up, ..
+                }) if state.last_card.is_some() => return Ok(Action::Undo),
+
+                Event::Key(KeyEvent {
                     code: KeyCode::Right,
                     ..
-                }) => return Ok(Action::Review(Rating::Good)),
+                }) if state.answer_visible => return Ok(Action::Review(Rating::Good)),
 
                 Event::Key(KeyEvent {
                     code: KeyCode::Left,
@@ -52,15 +58,13 @@ impl Action {
                 | Event::Key(KeyEvent {
                     code: KeyCode::Char(' '),
                     ..
-                }) => {
-                    return Ok(Action::Input(line));
-                }
+                }) if !line.is_empty() => return Ok(Action::Input(line)),
 
                 Event::Key(KeyEvent {
                     code: KeyCode::Backspace,
                     ..
                 }) => {
-                    if line.len() > 0 {
+                    if !line.is_empty() {
                         line.pop();
                         execute!(
                             stdout(),
@@ -73,9 +77,13 @@ impl Action {
                 Event::Key(KeyEvent {
                     code: KeyCode::Char(c),
                     ..
-                }) if c.is_digit(10) => {
+                }) if c.is_ascii_digit() => {
                     line.push(c);
                     execute!(stdout(), style::Print(c.to_string()))?;
+                }
+
+                Event::Key(_) if !state.answer_visible => {
+                    return Ok(Action::ShowAnswer);
                 }
 
                 _ => (),
@@ -118,36 +126,155 @@ impl fmt::Display for Summary {
     }
 }
 
-fn print_ok(mut stdout: &Stdout, card: &Card, answer: &String) -> Result<()> {
-    execute!(
-        stdout,
-        style::Print(format!("{} = {}", card.value, &answer)),
-        style::SetForegroundColor(Color::Green),
-        style::Print(" OK"),
-        style::ResetColor,
-        cursor::MoveToNextLine(1)
-    )?;
-    Ok(())
-}
-
-fn print_ko(mut stdout: &Stdout, card: &Card, answer: &String, expected: u8) -> Result<()> {
-    execute!(
-        stdout,
-        style::Print(format!("{} != {}", card.value, &answer)),
-        style::SetForegroundColor(Color::Red),
-        style::Print(" KO!!!"),
-        style::ResetColor,
-        style::Print(format!(" => {}", expected)),
-        style::ResetColor,
-        cursor::MoveToNextLine(1)
-    )?;
-
-    Ok(())
-}
-
 pub struct Opts {
     pub profile: String,
     pub examination: bool,
+}
+
+#[derive(Clone)]
+struct RatedCard {
+    card: Card,
+    input: Option<String>,
+    answer: u8,
+    rating: Rating,
+}
+
+struct State {
+    last_card: Option<RatedCard>,
+    answer_visible: bool,
+    current_card: Option<Card>,
+    summary: Summary,
+    examination: bool,
+}
+
+fn render(state: &State) -> Result<()> {
+    let mut stdout = stdout();
+
+    queue!(
+        &stdout,
+        cursor::MoveTo(0, 0),
+        terminal::Clear(ClearType::All),
+        style::ResetColor,
+    )?;
+
+    if let Some(rated) = &state.last_card {
+        match rated.rating {
+            Rating::Good => queue!(
+                &stdout,
+                style::Print(format!("{} = {}", rated.card.value, rated.answer)),
+                style::SetForegroundColor(Color::Green),
+                style::Print(" OK"),
+                style::ResetColor,
+                cursor::MoveToNextLine(1)
+            )?,
+            Rating::Bad => {
+                if let Some(input) = &rated.input {
+                    queue!(
+                        &stdout,
+                        style::Print(format!("{} != {}", rated.card.value, input)),
+                        style::SetForegroundColor(Color::Red),
+                        style::Print(" KO!!!"),
+                        style::ResetColor,
+                        style::Print(format!(" => {}", &rated.answer)),
+                        style::ResetColor,
+                        cursor::MoveToNextLine(1)
+                    )?
+                } else {
+                    queue!(
+                        &stdout,
+                        style::Print(format!("{} = {}", &rated.card.value, rated.answer)),
+                        style::SetForegroundColor(Color::Red),
+                        style::Print(" KO!!!"),
+                        style::ResetColor,
+                        cursor::MoveToNextLine(1)
+                    )?;
+                }
+            }
+        }
+    };
+
+    if let Some(card) = &state.current_card {
+        queue!(&stdout, style::Print(format!("{} = ", card.value)))?;
+
+        if state.answer_visible {
+            let expected = card.value.compute();
+            queue!(&stdout, style::Print(expected.to_string()))?;
+        }
+    }
+
+    stdout.flush()?;
+
+    Ok(())
+}
+
+impl State {
+    fn show_answer(&mut self) {
+        if !self.examination {
+            self.answer_visible = true
+        }
+    }
+
+    fn hide_answer(&mut self) {
+        if !self.examination {
+            self.answer_visible = false
+        }
+    }
+
+    fn update(&mut self, session: &mut Session, action: Action) {
+        if let Some(card) = &self.current_card {
+            match action {
+                Action::Input(input) => {
+                    let expected = card.value.compute();
+                    let rating = if input == expected.to_string() {
+                        self.summary.ok += 1;
+                        Rating::Good
+                    } else {
+                        self.summary.ko += 1;
+                        Rating::Bad
+                    };
+
+                    self.last_card = Some(RatedCard {
+                        card: card.to_owned(),
+                        rating,
+                        input: Some(input),
+                        answer: expected,
+                    });
+                    self.current_card = session.peek().cloned();
+                    self.hide_answer();
+                    session.review(rating);
+                }
+                Action::Review(rating) => {
+                    session.review(rating);
+                    match rating {
+                        Rating::Good => self.summary.ok += 1,
+                        Rating::Bad => self.summary.ko += 1,
+                    }
+                    self.last_card = Some(RatedCard {
+                        card: card.to_owned(),
+                        rating,
+                        input: None,
+                        answer: card.value.compute(),
+                    });
+                    self.current_card = session.peek().cloned();
+                    self.hide_answer()
+                }
+                Action::ShowAnswer => self.show_answer(),
+                Action::Undo => {
+                    session.rollback();
+                    if let Some(last_card) = &self.last_card {
+                        match last_card.rating {
+                            Rating::Good => self.summary.ok -= 1,
+                            Rating::Bad => self.summary.ko -= 1,
+                        }
+                    }
+                    self.last_card = None;
+                    self.show_answer();
+                    self.current_card = session.peek().cloned();
+                }
+                Action::Exit => self.current_card = None,
+            }
+        }
+    }
 }
 
 pub fn run(opts: Opts) -> Result<()> {
@@ -155,74 +282,29 @@ pub fn run(opts: Opts) -> Result<()> {
     let mut stdout = stdout();
     execute!(stdout, terminal::EnterAlternateScreen)?;
 
-    let mut summary = Summary::new();
     let mut session = Session::load(&opts.profile);
+    let mut state = State {
+        last_card: None,
+        current_card: session.peek().cloned(),
+        answer_visible: opts.examination,
+        summary: Summary::new(),
+        examination: opts.examination,
+    };
 
-    while let Some(card) = session.peek() {
-        log::debug!("{:?}", card);
-        log::debug!("{:?}", session);
+    while state.current_card.is_some() {
+        render(&state)?;
 
-        let expected = card.value.compute();
-
-        execute!(
-            stdout,
-            style::Print(format!(
-                "{} = {}",
-                card.value,
-                if opts.examination {
-                    expected.to_string()
-                } else {
-                    String::from("")
-                }
-            ))
-        )?;
-
-        let input = Action::read();
-
-        execute!(
-            stdout,
-            cursor::MoveTo(0, 0),
-            terminal::Clear(ClearType::All),
-            style::ResetColor,
-        )?;
-
-        match input {
-            Ok(Action::Input(answer)) => match answer.parse::<u8>() {
-                Ok(value) if value == expected => {
-                    print_ok(&stdout, &card, &answer)?;
-                    summary.ok += 1;
-                    session.review(Rating::Good)
-                }
-                _ => {
-                    print_ko(&stdout, &card, &answer, expected)?;
-                    summary.ko += 1;
-                    session.review(Rating::Bad)
-                }
-            },
-            Ok(Action::Review(Rating::Good)) => {
-                print_ok(&stdout, &card, &expected.to_string())?;
-                summary.ok += 1;
-                session.review(Rating::Good)
-            }
-            Ok(Action::Review(Rating::Bad)) => {
-                execute!(
-                    stdout,
-                    style::Print(format!("{} = {}", card.value, &expected)),
-                    style::SetForegroundColor(Color::Red),
-                    style::Print(" KO!!!"),
-                    style::ResetColor,
-                    cursor::MoveToNextLine(1)
-                )?;
-                summary.ko += 1;
-                session.review(Rating::Bad)
-            }
-            Ok(Action::Exit) | _ => break,
-        };
+        let action = Action::read(&state)?;
+        state.update(&mut session, action);
     }
 
     execute!(stdout, terminal::LeaveAlternateScreen)?;
     terminal::disable_raw_mode()?;
-    execute!(stdout, style::Print(summary), cursor::MoveToNextLine(1),)?;
+    execute!(
+        stdout,
+        style::Print(state.summary),
+        cursor::MoveToNextLine(1)
+    )?;
     session.save(&opts.profile)
 }
 
@@ -238,20 +320,21 @@ pub fn report(opts: ReportOpts) {
         // .filter(|card| matches!(card.last_result, Some(Rating::Bad)))
         .collect();
 
-    if bad_rated_cards.len() == 0 {
+    if bad_rated_cards.is_empty() {
         println!("Nothing to show");
     } else {
         bad_rated_cards.sort_by_key(|card| card.last_seen);
         bad_rated_cards.iter().for_each(|card| {
             println!(
-                "{} {} = {}",
+                "{} {} = {} interval {}",
                 if matches!(card.last_result, Some(Rating::Bad)) {
                     "ko"
                 } else {
                     "ok"
                 },
                 card.value,
-                card.value.compute().to_string(),
+                card.value.compute(),
+                card.interval
             )
         });
     }
