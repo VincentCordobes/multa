@@ -39,15 +39,27 @@ impl Action {
 
                 Event::Key(KeyEvent {
                     code: KeyCode::Up, ..
+                })
+                | Event::Key(KeyEvent {
+                    code: KeyCode::Char('k'),
+                    ..
                 }) if state.last_card.is_some() => return Ok(Action::Undo),
 
                 Event::Key(KeyEvent {
                     code: KeyCode::Right,
                     ..
+                })
+                | Event::Key(KeyEvent {
+                    code: KeyCode::Char('l'),
+                    ..
                 }) if state.answer_visible => return Ok(Action::Review(Rating::Good)),
 
                 Event::Key(KeyEvent {
                     code: KeyCode::Left,
+                    ..
+                })
+                | Event::Key(KeyEvent {
+                    code: KeyCode::Char('h'),
                     ..
                 }) => return Ok(Action::Review(Rating::Bad)),
 
